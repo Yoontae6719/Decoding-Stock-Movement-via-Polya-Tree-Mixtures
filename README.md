@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-# Decoding-Stock-Movement-via-Beta-Bernoulli-Polya-Tree-Mixtures
-Decoding Stock Movement via Beta-Bernoulli Polya Tree Mixtures
-=======
 # PTM (Decoding Stock Movement via Polya Tree Mixtures)
 
 This is the origin Pytorch implementation of PTM in the following paper: Decoding Stock Movement via Polya Tree Mixtures.
