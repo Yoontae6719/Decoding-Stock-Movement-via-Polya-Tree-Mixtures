@@ -8,9 +8,8 @@ from typing import Optional, List
 
 class LocalExpert(nn.Module):
     """
-    - 리프 노드에서 사용될 간단한 MLP 분류기
-    - 입력 x는 (batch_size, D),
-      마스크 gamma는 (D,) 형태로 곱해준 뒤 MLP 처리
+    - MLP classifier to be used in the leaf node
+    - x : (batch_size, D),
     """
     def __init__(self, num_features, num_classes, hidden_dim=32):
         super().__init__()
@@ -29,7 +28,7 @@ class LocalExpert(nn.Module):
 
 class SoftBetaBernoulliFeatureSelector(nn.Module):
     """
-    Beta-Bernoulli에 대한 Gumbel-Sigmoid 근사로 feature selection
+    Feature selection by Gumbel-Sigmoid approximation to Beta-Bernoulli
     """
     def __init__(self, num_features, alpha=1.0, beta=1.0):
         super().__init__()
@@ -51,17 +50,17 @@ class SoftBetaBernoulliFeatureSelector(nn.Module):
     def regularization_loss(self):
         phi = torch.sigmoid(self.logit_phi)
         prior_nll = - ((self.alpha - 1) * torch.log(phi + 1e-8) +
-                       (self.beta - 1) * torch.log(1 - phi + 1e-8)).sum()
+                       (self.beta - 1) * torch.log(1 - phi + 1e-8)).mean() # sum()
         return prior_nll
 
 
 class SoftPolyaTreeNode(nn.Module):
     """
-    - 내부 노드는 gating(시그모이드)으로 왼/오른쪽 child 결정
-    - leaf 노드는 SoftBetaBernoulliFeatureSelector + LocalExpert
+    - The internal node determines the left/right child by gating (sigmoid).
+    - leaf node => SoftBetaBernoulliFeatureSelector + LocalExpert
     """
     def __init__(self, dim_input, num_classes, max_depth=2, depth=0,
-                 hidden_dim_expert=32, alpha_fs=1.0, beta_fs=1.0,
+                 hidden_dim_expert=32, alpha_fs=1.0, beta_fs=1.0, gating_mlp_hidden = 16,
                  use_gating_mlp=False):
         super().__init__()
         self.dim_input = dim_input
@@ -72,9 +71,9 @@ class SoftPolyaTreeNode(nn.Module):
 
         if use_gating_mlp:
             self.gating = nn.Sequential(
-                nn.Linear(dim_input, 16),
+                nn.Linear(dim_input, gating_mlp_hidden),
                 nn.Tanh(),
-                nn.Linear(16, 1)
+                nn.Linear(gating_mlp_hidden, 1)
             )
             self.w, self.b = None, None
         else:
@@ -98,26 +97,60 @@ class SoftPolyaTreeNode(nn.Module):
             )
 
     def forward(self, x, temperature=0.5):
+        """
+        - All nodes return (batch_size, num_classes) probability distribution
+        """
         if self.is_leaf:
             gamma, _ = self.feature_selector(temperature, self.training)
             logits = self.local_expert(x, gamma_mask=gamma)
-            return logits
+            probs = F.softmax(logits, dim=-1)  # In leaf, convert to probability
+            return probs
+        else:
+            # Soft gating
+            if self.gating is not None:
+                gate_logit = self.gating(x).squeeze(-1)
+            else:
+                gate_logit = x @ self.w + self.b
+
+            p_left = torch.sigmoid(gate_logit)  # (batch_size,)
+            probs_left = self.left_child(x, temperature)
+            probs_right = self.right_child(x, temperature)
+
+            # probability mixture
+            out = p_left.unsqueeze(1)*probs_left + (1 - p_left).unsqueeze(1)*probs_right
+            return out
+            
+    def forward_hard(self, x):
+        """ WE USE THIS FUNCTION AT TEST PERIOD
+        - Interpretation: If p_left>0.5 instead of Soft Gating, it is 'hard' branching to the left or right.
+        - Finally, masking is performed based on gamma>0.5 even in the leaf.
+        """
+        if self.is_leaf:
+            # If you call it with 'training=False' in the feature selector, gamma = (phi>0.5)
+            gamma, _ = self.feature_selector(temperature=1.0, training=False)
+            logits = self.local_expert(x, gamma)
+            probs = F.softmax(logits, dim=-1)
+            return probs
         else:
             if self.gating is not None:
                 gate_logit = self.gating(x).squeeze(-1)
             else:
                 gate_logit = x @ self.w + self.b
-            p_left = torch.sigmoid(gate_logit)
-            out_left = self.left_child(x, temperature)
-            out_right = self.right_child(x, temperature)
-            p_left = p_left.unsqueeze(1)
-            out = p_left*out_left + (1-p_left)*out_right
-            return out
 
+            p_left = torch.sigmoid(gate_logit)
+            # hard routing
+            mask_left = (p_left > 0.5).float().unsqueeze(1)
+            mask_right = 1 - mask_left
+            # forward to child
+            probs_left = self.left_child.forward_hard(x)
+            probs_right = self.right_child.forward_hard(x)
+            out = mask_left*probs_left + mask_right*probs_right
+            return out
+            
     def regularization_loss(self):
         reg_loss = 0.0
         weight_decay = 1e-4
-        # 게이팅 파라미터에 L2
+        # Gating parameter regularization
         if self.gating is not None:
             for param in self.gating.parameters():
                 reg_loss += weight_decay * (param**2).sum()
@@ -128,8 +161,11 @@ class SoftPolyaTreeNode(nn.Module):
                 reg_loss += weight_decay * (self.b**2).sum()
 
         if self.is_leaf:
+            for param in self.local_expert.parameters():
+                reg_loss += weight_decay * (param**2).sum()
             reg_loss += self.feature_selector.regularization_loss()
         else:
             reg_loss += self.left_child.regularization_loss()
             reg_loss += self.right_child.regularization_loss()
+
         return reg_loss

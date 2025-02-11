@@ -4,6 +4,7 @@ import torch
 import torch.backends
 import random
 import numpy as np
+import optuna  
 from exp.exp_main import Exp_Main
 
 if __name__ == '__main__':
@@ -19,11 +20,11 @@ if __name__ == '__main__':
     parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
     parser.add_argument('--model', type=str, required=True, default='MOE', help='model name')
 
-     # data loader
+    # data loader
     parser.add_argument('--data', type=str, required=True, default='SNP', help='dataset type')
     parser.add_argument('--root_path', type=str, default='./dataset', help='root path of the data file')
     parser.add_argument('--data_path', type=str, default='SNP.csv', help='data file')
-    parser.add_argument('--stop_loss', type=float, default=0, help='stop loss ratio [0,2,3,4,5]')
+    parser.add_argument('--stop_loss', type=float, default=0, help='stop loss ratio')
     parser.add_argument('--checkpoints', type=str, default='./checkpoints/', help='location of model checkpoints')
     parser.add_argument('--scale', type=bool, default=True, help='scale param')
 
@@ -35,7 +36,7 @@ if __name__ == '__main__':
     parser.add_argument('--patience', type=int, default=10, help='early stopping patience')
     parser.add_argument('--learning_rate', type=float, default=0.0002, help='optimizer learning rate')
     parser.add_argument('--des', type=str, default='test', help='exp description')
-    parser.add_argument('--lradj', type=str, default='type1', help='adjust learning rate')
+    parser.add_argument('--lradj', type=str, default='cosine', help='adjust learning rate')
     parser.add_argument('--temperature_scheduler', type=bool, default=True, help='temperature scheduler')
 
     # GPU
@@ -53,10 +54,23 @@ if __name__ == '__main__':
     parser.add_argument('--alpha_fs', type=float, default=1.0, help='Beta-Bernoulli alpha')
     parser.add_argument('--beta_fs', type=float, default=1.0, help='Beta-Bernoulli beta')
     parser.add_argument('--use_gating_mlp', type=bool, default=False, help='use_gating_mlp')
-    parser.add_argument('--max_grad_norm', type=int, default=5.0, help='max_grad_norm')
+    parser.add_argument('--gating_mlp_hidden', type=int, default=32, help='Gating mlp hidden dim')
+
+    parser.add_argument('--max_grad_norm', type=float, default=5.0, help='max_grad_norm')
+
 
     
+    parser.add_argument('--initial_temp', type=float, default=1.0, help='initial_temp')
+    parser.add_argument('--final_temp', type=float, default=2.0, help='final_temp')
+    parser.add_argument('--anneal_epochs', type=int, default=30, help='anneal_epochs')
+    parser.add_argument('--schedule_type', type=str, default="linear", help='schedule_type')
+
+    # Optuna settings
+    parser.add_argument('--n_trial', type=int, default=20, help='number of tuning trials') 
+    parser.add_argument('--optuna_metric', type=str, default="loss", help='optuna_metric: "mcc" or "loss"')
+
     args = parser.parse_args()
+
     if torch.cuda.is_available() and args.use_gpu:
         args.device = torch.device('cuda:{}'.format(args.gpu))
         print('Using GPU')
@@ -76,10 +90,11 @@ if __name__ == '__main__':
     print('Args in experiment:')
     print(args)
 
-    Exp = Exp_Main
-    
-    for ii in range(args.itr):
-        setting = '{}_{}_md{}_hde{}_al{}_be{}_mlp{}_{}'.format(
+    # (A) Training (is_training = 1)
+    if args.is_training == 1:
+        Exp = Exp_Main
+        for ii in range(args.itr):
+            setting = '{}_{}_md{}_hde{}_al{}_be{}_mlp{}_{}'.format(
                 args.model,
                 args.data,
                 args.max_depth,
@@ -87,13 +102,61 @@ if __name__ == '__main__':
                 int(args.alpha_fs * 10),
                 int(args.beta_fs*10),
                 args.use_gating_mlp,
-                args.des, ii)
-    
-        exp = Exp(args)  # set experiments
-        print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
-        exp.fit(setting)
+                args.des
+            ) + f"_{ii}"
 
-        torch.cuda.empty_cache()
+            exp = Exp(args)  
+            print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
+            exp.fit(setting)
+
+            torch.cuda.empty_cache()
+            
+    # (B) Optuna (is_training = 2)
+    elif args.is_training == 2:
+        Exp = Exp_Main(args)  
+
+        if args.optuna_metric == "mcc":
+            study = optuna.create_study(direction="maximize")
+        else:
+            study = optuna.create_study(direction="minimize")
+
+        def optuna_objective(trial):
+            return Exp.objective(trial)
+
+        print("===== Start Optuna Tuning =====")
+        study.optimize(optuna_objective, n_trials=args.n_trial)
+
+        print("===== Tuning Complete =====")
+        print(f"Best Trial ID: {study.best_trial.number}")
+        print(f"Best Value  : {study.best_trial.value}")
+        print("Best Params : ")
+        for key, val in study.best_trial.params.items():
+            print(f"    {key}: {val}")
+
+        # Save
+        folder_path = './results/' + args.des + '/' + args.data + '/'
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
 
 
+        csv_file = folder_path  + "best_params.csv" 
+        with open(csv_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["best_trial_id", "best_value", "param_name", "param_value"])
 
+            for key, val in best_trial.params.items():
+                writer.writerow([
+                    best_trial.number,
+                    best_trial.value,
+                    key,
+                    val
+                ])
+                
+        print(f"\n[INFO] Best trial parameters are saved to {csv_file}.")
+        if args.gpu_type == 'mps':
+            torch.backends.mps.empty_cache()
+        elif args.gpu_type == 'cuda':
+            torch.cuda.empty_cache()
+            
+    else:
+        print(f"is_training={args.is_training} is not supported. Use 1 or 2.")

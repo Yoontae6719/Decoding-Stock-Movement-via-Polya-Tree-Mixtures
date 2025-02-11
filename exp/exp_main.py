@@ -34,8 +34,12 @@ class Exp_Main(Exp_Basic):
         }
         model = model_dict[self.args.model].Model(self.args).float()
 
+        if self.args.use_gpu:
+            model = model.to(self.device)
+        
         if self.args.use_multi_gpu and self.args.use_gpu:
             model = nn.DataParallel(model, device_ids=self.args.device_ids)
+
         return model
 
     def _get_data(self, flag):
@@ -47,10 +51,10 @@ class Exp_Main(Exp_Basic):
         return model_optim
 
     def fit(self, setting):
-        sched = TemperatureScheduler(  initial_temp=1.0,
-                                        final_temp=2.0,
-                                        anneal_epochs=5,
-                                        schedule_type="linear",
+        sched = TemperatureScheduler( initial_temp=self.args.initial_temp,
+                                        final_temp=self.args.final_temp,
+                                        anneal_epochs=self.args.anneal_epochs,
+                                        schedule_type=self.args.schedule_type,
                                     )
 
         train_data, train_loader = self._get_data(flag='train')
@@ -71,47 +75,61 @@ class Exp_Main(Exp_Basic):
             total_loss = 0.0
             total_correct = 0
             total_samples = 0
-
-            if self.args.temperature_scheduler is not None:
-                current_temp = sched.get_temp(epoch)
-            else:
-                current_temp = 0.5
+            
+            train_preds = []
+            train_labels = []
+            
+            current_temp = sched.get_temp(epoch) if self.args.temperature_scheduler else 0.5
 
             for x_batch, y_batch in train_loader:
                 x_batch = x_batch.to(self.device)
                 y_batch = y_batch.to(self.device).squeeze(-1)
 
                 model_optim.zero_grad()
-                logits = self.model(x_batch, temperature=current_temp)
-
-                ce_loss = F.cross_entropy(logits, y_batch)
+                
+                probs = self.model(x_batch, temperature=current_temp)
+                
+                # Get NLL
+                # probs.shape = (batch_size, num_classes)
+                # y_batch.shape = (batch_size,)
+                nll_loss = -torch.log(probs[torch.arange(x_batch.size(0)), y_batch] + 1e-8).mean()
+                
                 reg_loss = self.model.regularization_loss()
-                loss = ce_loss + reg_loss
-
+                loss = nll_loss + reg_loss
+                
                 loss.backward()
                 if self.args.max_grad_norm > 0:
                     nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm)
                 model_optim.step()
 
+                # loss accumulate
                 total_loss += loss.item() * x_batch.size(0)
-                preds = torch.argmax(logits, dim=1)
+                
+                # for acc -> probs -> argmax
+                preds = torch.argmax(probs, dim=1)
                 correct = (preds == y_batch).sum().item()
                 total_correct += correct
                 total_samples += x_batch.size(0)
+                
+                train_preds.extend(preds.cpu().numpy())
+                train_labels.extend(y_batch.cpu().numpy())
 
             avg_loss = total_loss / total_samples
             avg_acc = total_correct / total_samples
+            train_mcc = matthews_corrcoef(train_labels, train_preds)
 
-            self.history['epoch'].append(epoch+1)
-            self.history['train_loss'].append(avg_loss)
-            self.history['train_acc'].append(avg_acc)
-    
-            vali_loss, valid_acc = self.evaluate(vali_loader)
-            test_loss, test_acc = self.evaluate(test_loader)
+            # validation
+            vali_loss, vali_acc, vali_mcc = self.evaluate(vali_loader)
+            test_loss, test_acc, test_mcc = self.evaluate(test_loader)
 
-            print(f"[Epoch {epoch+1}/{self.args.train_epochs}] "  f"Temp={current_temp:.3f} train_loss={avg_loss:.4f}, train_acc={avg_acc:.4f}")
-            print(f"[Epoch {epoch+1}/{self.args.train_epochs}] "  f"valid_loss={vali_loss:.4f}, valid_acc={valid_acc:.4f}")
-            print(f"[Epoch {epoch+1}/{self.args.train_epochs}] "  f"test_loss={test_loss:.4f}, test_acc={test_acc:.4f}")
+            print(f"[Epoch {epoch+1}/{self.args.train_epochs}] "
+                  f"Temp={current_temp:.3f} "
+                  f"train_loss={avg_loss:.4f}, train_acc={avg_acc:.4f}, train_mcc={train_mcc:.4f}")
+            print(f"[Epoch {epoch+1}/{self.args.train_epochs}] "
+                  f"valid_loss={vali_loss:.4f}, valid_acc={vali_acc:.4f}, valid_mcc={vali_mcc:.4f}")
+            print(f"[Epoch {epoch+1}/{self.args.train_epochs}] "
+                  f"test_loss={test_loss:.4f}, test_acc={test_acc:.4f}, test_mcc={test_mcc:.4f}")
+
             
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
@@ -130,22 +148,35 @@ class Exp_Main(Exp_Basic):
         total_loss = 0.0
         total_correct = 0
         total_samples = 0
-        test_temp = 0.1
+        preds_list = []
+        labels_list = []
 
+        test_temp = 0.1  # (가령 inference시 낮은 온도)
         with torch.no_grad():
             for x_batch, y_batch in data_loader:
                 x_batch = x_batch.to(self.device)
                 y_batch = y_batch.to(self.device).squeeze(-1)
-                logits = self.model(x_batch, temperature=test_temp)
-                ce = F.cross_entropy(logits, y_batch, reduction='sum').item()
-                preds = torch.argmax(logits, dim=1)
+
+                # 확률 리턴
+                probs = self.model(x_batch, temperature=test_temp)
+                # NLL
+                nll = -torch.log(probs[torch.arange(x_batch.size(0)), y_batch] + 1e-8).sum().item()
+
+                preds = torch.argmax(probs, dim=1)
                 correct = (preds == y_batch).sum().item()
 
-                total_loss += ce
+                total_loss += nll
                 total_correct += correct
                 total_samples += x_batch.size(0)
 
-        return total_loss/total_samples, total_correct/total_samples
+                preds_list.extend(preds.cpu().numpy())
+                labels_list.extend(y_batch.cpu().numpy())
+
+        avg_loss = total_loss / total_samples
+        avg_acc = total_correct / total_samples
+        mcc = matthews_corrcoef(labels_list, preds_list)
+        return avg_loss, avg_acc, mcc
+        
 
     def predict(self, x):
         self.model.eval()
@@ -154,25 +185,65 @@ class Exp_Main(Exp_Basic):
             logits = self.model(x, temperature=0.1)
             preds = torch.argmax(logits, dim=1)
         return preds.cpu()
+    
+       
+    def objective(self, trial):
+        alpha_fs = trial.suggest_float("alpha", 0.1, 2.0, log=True)
+        beta_fs  = trial.suggest_float("beta", 0.1, 2.0, log=True)
 
+        max_depth  = trial.suggest_int("max_depth", 1, 8)
 
+        use_gating_mlp = trial.suggest_categorical("use_gating_mlp", [False, True])
+        if use_gating_mlp:
+            gating_mlp_hidden = trial.suggest_categorical("gating_mlp_hidden", [8, 16, 32,64])
+        else:
+            gating_mlp_hidden = 0
 
+        hidden_dim_expert = trial.suggest_categorical("hidden_dim_expert", [16, 32, 64, 128])
+        initial_temp  = trial.suggest_categorical("initial_temp", [1.0, 1.5, 2.0])
+        final_temp    = trial.suggest_categorical("final_temp", [0.5, 1.0, 0.2])
+        anneal_epochs = trial.suggest_categorical("anneal_epochs", [5, 10, 20, 30])
+        schedule_type = trial.suggest_categorical("schedule_type", ["linear", "exp"])
+        learning_rate = trial.suggest_categorical("learning_rate", [1e-4, 3e-4, 1e-3, 3e-3])
+        max_grad_norm = trial.suggest_categorical("max_grad_norm", [3.0, 5.0])
 
+        # update argument
+        self.args.alpha_fs = alpha_fs
+        self.args.beta_fs  = beta_fs
+        self.args.max_depth  = max_depth
+        self.args.use_gating_mlp = use_gating_mlp
+        self.args.gating_mlp_hidden = gating_mlp_hidden
+        self.args.hidden_dim_expert = hidden_dim_expert
+        self.args.initial_temp  = initial_temp
+        self.args.final_temp    = final_temp
+        self.args.anneal_epochs = anneal_epochs
+        self.args.learning_rate = learning_rate
 
+        self.args.max_grad_norm = max_grad_norm
 
+        setting = (
+            f"trial_{trial.number}_"
+            f"alpha{alpha_fs:.3f}_beta{beta_fs:.3f}_lr{learning_rate:.3f}"
+            f"depth{max_depth}_mlp{use_gating_mlp}_hdim{hidden_dim_expert}"
+        )
 
+        self.model = self._build_model()
+        self.fit(setting=setting)
 
+        _, vali_loader = self._get_data(flag='val')
+        vali_loss, vali_acc, vali_mcc = self.evaluate(vali_loader)
 
+        if self.args.optuna_metric == "mcc":
+            trial.report(vali_mcc, step=0)
+            if trial.should_prune():
+                raise optuna.exceptions.TrialPruned()
+            return vali_mcc
 
+        elif self.args.optuna_metric == "loss":
+            trial.report(vali_loss, step=0)
+            if trial.should_prune():
+                raise optuna.exceptions.TrialPruned()
+            return vali_loss
 
-
-
-
-
-
-
-
-
-
-
-
+        else:
+            raise ValueError("self.args.optuna_metric must be either 'mcc' or 'loss'.")

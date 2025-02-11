@@ -10,23 +10,27 @@ from layers.polya_tree import SoftPolyaTreeNode
 class Model(nn.Module):
     def __init__(self, configs):
         super().__init__()
-        
         self.root = SoftPolyaTreeNode(
-                                        dim_input   = configs.dim_input ,
-                                        num_classes = configs.num_classes,
-                                        max_depth   = configs.max_depth,
-                                        depth = 0,
-                                        hidden_dim_expert = configs.hidden_dim_expert,
-                                        alpha_fs    = configs.alpha_fs,
-                                        beta_fs     = configs.beta_fs,
-                                        use_gating_mlp = configs.use_gating_mlp
-                                    )
+            dim_input   = configs.dim_input,
+            num_classes = configs.num_classes,
+            max_depth   = configs.max_depth,
+            depth = 0,
+            hidden_dim_expert = configs.hidden_dim_expert,
+            alpha_fs    = configs.alpha_fs,
+            beta_fs     = configs.beta_fs,
+            use_gating_mlp = configs.use_gating_mlp
+        )
         self.dim_input = configs.dim_input
         self.num_classes = configs.num_classes
         self.max_depth = configs.max_depth
     
     def forward(self, x, temperature=0.5):
-        return self.root(x, temperature)  # (batch_size, num_classes)
+        probs = self.root(x, temperature)
+        return probs
     
     def regularization_loss(self):
         return self.root.regularization_loss()
+    
+    def forward_hard(self, x):
+        # for xai (test period): hard gating + hard mask
+        return self.root.forward_hard(x)
