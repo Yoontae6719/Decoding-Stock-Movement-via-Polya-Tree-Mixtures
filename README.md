@@ -40,4 +40,3 @@ will be write
 - Will be updated
 - 
 Built by [Anonymous](https://yoontae6719.github.io/) - Copyright (c) 2025 Anonymous
->>>>>>> a4b1b5c (Initial commit)
