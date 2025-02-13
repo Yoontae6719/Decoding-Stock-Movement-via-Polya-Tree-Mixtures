@@ -18,7 +18,8 @@ import numpy as np
 
 from utils.tools import EarlyStopping, adjust_learning_rate, TemperatureScheduler
 from sklearn.metrics import matthews_corrcoef, confusion_matrix
-
+import shutil
+import optuna
 class Exp_Main(Exp_Basic):
     def __init__(self, args):
         super(Exp_Main, self).__init__(args)
@@ -95,7 +96,7 @@ class Exp_Main(Exp_Basic):
                 nll_loss = -torch.log(probs[torch.arange(x_batch.size(0)), y_batch] + 1e-8).mean()
                 
                 reg_loss = self.model.regularization_loss()
-                loss = nll_loss + reg_loss
+                loss = nll_loss# + reg_loss
                 
                 loss.backward()
                 if self.args.max_grad_norm > 0:
@@ -164,8 +165,10 @@ class Exp_Main(Exp_Basic):
 
                 preds = torch.argmax(probs, dim=1)
                 correct = (preds == y_batch).sum().item()
+                
+                reg_loss = self.model.regularization_loss()
 
-                total_loss += nll
+                total_loss += nll# + reg_loss
                 total_correct += correct
                 total_samples += x_batch.size(0)
 
@@ -191,21 +194,20 @@ class Exp_Main(Exp_Basic):
         alpha_fs = trial.suggest_float("alpha", 0.1, 2.0, log=True)
         beta_fs  = trial.suggest_float("beta", 0.1, 2.0, log=True)
 
-        max_depth  = trial.suggest_int("max_depth", 1, 8)
+        max_depth  = trial.suggest_int("max_depth", 1, 5)
 
-        use_gating_mlp = trial.suggest_categorical("use_gating_mlp", [False, True])
+        use_gating_mlp = trial.suggest_categorical("use_gating_mlp", [0, 1])
         if use_gating_mlp:
-            gating_mlp_hidden = trial.suggest_categorical("gating_mlp_hidden", [8, 16, 32,64])
+            gating_mlp_hidden = trial.suggest_categorical("gating_mlp_hidden", [8, 16, 32])
         else:
             gating_mlp_hidden = 0
 
-        hidden_dim_expert = trial.suggest_categorical("hidden_dim_expert", [16, 32, 64, 128])
+        hidden_dim_expert = trial.suggest_categorical("hidden_dim_expert", [16, 32, 64])
         initial_temp  = trial.suggest_categorical("initial_temp", [1.0, 1.5, 2.0])
         final_temp    = trial.suggest_categorical("final_temp", [0.5, 1.0, 0.2])
         anneal_epochs = trial.suggest_categorical("anneal_epochs", [5, 10, 20, 30])
-        schedule_type = trial.suggest_categorical("schedule_type", ["linear", "exp"])
+        schedule_type = trial.suggest_categorical("schedule_type", ["linear"])
         learning_rate = trial.suggest_categorical("learning_rate", [1e-4, 3e-4, 1e-3, 3e-3])
-        max_grad_norm = trial.suggest_categorical("max_grad_norm", [3.0, 5.0])
 
         # update argument
         self.args.alpha_fs = alpha_fs
@@ -219,7 +221,6 @@ class Exp_Main(Exp_Basic):
         self.args.anneal_epochs = anneal_epochs
         self.args.learning_rate = learning_rate
 
-        self.args.max_grad_norm = max_grad_norm
 
         setting = (
             f"trial_{trial.number}_"
@@ -229,6 +230,11 @@ class Exp_Main(Exp_Basic):
 
         self.model = self._build_model()
         self.fit(setting=setting)
+
+        checkpoint_dir = os.path.join(self.args.checkpoints, setting)
+        if os.path.exists(checkpoint_dir):
+            shutil.rmtree(checkpoint_dir)
+
 
         _, vali_loader = self._get_data(flag='val')
         vali_loss, vali_acc, vali_mcc = self.evaluate(vali_loader)

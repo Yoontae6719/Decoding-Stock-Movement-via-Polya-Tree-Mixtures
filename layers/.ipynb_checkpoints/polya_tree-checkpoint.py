@@ -61,7 +61,7 @@ class SoftPolyaTreeNode(nn.Module):
     """
     def __init__(self, dim_input, num_classes, max_depth=2, depth=0,
                  hidden_dim_expert=32, alpha_fs=1.0, beta_fs=1.0, gating_mlp_hidden = 16,
-                 use_gating_mlp=False):
+                 use_gating_mlp=0):
         super().__init__()
         self.dim_input = dim_input
         self.num_classes = num_classes
@@ -88,13 +88,17 @@ class SoftPolyaTreeNode(nn.Module):
             self.right_child = None
         else:
             self.left_child = SoftPolyaTreeNode(
-                dim_input, num_classes, max_depth, depth+1,
-                hidden_dim_expert, alpha_fs, beta_fs, use_gating_mlp
-            )
+                    dim_input, num_classes, max_depth, depth+1,
+                    hidden_dim_expert, alpha_fs, beta_fs, 
+                    gating_mlp_hidden=gating_mlp_hidden,  # ← 추가
+                    use_gating_mlp=use_gating_mlp
+                )
             self.right_child = SoftPolyaTreeNode(
-                dim_input, num_classes, max_depth, depth+1,
-                hidden_dim_expert, alpha_fs, beta_fs, use_gating_mlp
-            )
+                    dim_input, num_classes, max_depth, depth+1,
+                    hidden_dim_expert, alpha_fs, beta_fs,
+                    gating_mlp_hidden=gating_mlp_hidden,  # ← 추가
+                    use_gating_mlp=use_gating_mlp
+                )
 
     def forward(self, x, temperature=0.5):
         """
@@ -150,20 +154,11 @@ class SoftPolyaTreeNode(nn.Module):
     def regularization_loss(self):
         reg_loss = 0.0
         weight_decay = 1e-4
-        # Gating parameter regularization
-        if self.gating is not None:
-            for param in self.gating.parameters():
-                reg_loss += weight_decay * (param**2).sum()
-        else:
-            if self.w is not None:
-                reg_loss += weight_decay * (self.w**2).sum()
-            if self.b is not None:
-                reg_loss += weight_decay * (self.b**2).sum()
 
         if self.is_leaf:
             for param in self.local_expert.parameters():
                 reg_loss += weight_decay * (param**2).sum()
-            reg_loss += self.feature_selector.regularization_loss()
+            reg_loss += self.feature_selector.regularization_loss() * 0.01
         else:
             reg_loss += self.left_child.regularization_loss()
             reg_loss += self.right_child.regularization_loss()
