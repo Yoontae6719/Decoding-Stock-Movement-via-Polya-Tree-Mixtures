@@ -82,7 +82,7 @@ class Exp_Main(Exp_Basic):
             
             current_temp = sched.get_temp(epoch) if self.args.temperature_scheduler else 0.5
 
-            for x_batch, y_batch in train_loader:
+            for x_batch, y_batch, x_close in train_loader:
                 x_batch = x_batch.to(self.device)
                 y_batch = y_batch.to(self.device).squeeze(-1)
 
@@ -96,7 +96,7 @@ class Exp_Main(Exp_Basic):
                 nll_loss = -torch.log(probs[torch.arange(x_batch.size(0)), y_batch] + 1e-8).mean()
                 
                 reg_loss = self.model.regularization_loss()
-                loss = nll_loss# + reg_loss
+                loss = nll_loss
                 
                 loss.backward()
                 if self.args.max_grad_norm > 0:
@@ -154,7 +154,7 @@ class Exp_Main(Exp_Basic):
 
         test_temp = 0.1  # (가령 inference시 낮은 온도)
         with torch.no_grad():
-            for x_batch, y_batch in data_loader:
+            for x_batch, y_batch, x_close in data_loader:
                 x_batch = x_batch.to(self.device)
                 y_batch = y_batch.to(self.device).squeeze(-1)
 
@@ -207,7 +207,7 @@ class Exp_Main(Exp_Basic):
         final_temp    = trial.suggest_categorical("final_temp", [0.5, 1.0, 0.2])
         anneal_epochs = trial.suggest_categorical("anneal_epochs", [5, 10, 20, 30])
         schedule_type = trial.suggest_categorical("schedule_type", ["linear"])
-        learning_rate = trial.suggest_categorical("learning_rate", [1e-4, 3e-4, 1e-3, 3e-3])
+        learning_rate = trial.suggest_categorical("learning_rate", [3e-4, 1e-3, 3e-3])
 
         # update argument
         self.args.alpha_fs = alpha_fs
@@ -234,7 +234,6 @@ class Exp_Main(Exp_Basic):
         checkpoint_dir = os.path.join(self.args.checkpoints, setting)
         if os.path.exists(checkpoint_dir):
             shutil.rmtree(checkpoint_dir)
-
 
         _, vali_loader = self._get_data(flag='val')
         vali_loss, vali_acc, vali_mcc = self.evaluate(vali_loader)
