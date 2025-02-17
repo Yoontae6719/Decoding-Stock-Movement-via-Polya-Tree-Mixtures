@@ -53,13 +53,11 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_dim_expert', type=int, default=32, help='hidden dim for expert')
     parser.add_argument('--alpha_fs', type=float, default=1.0, help='Beta-Bernoulli alpha')
     parser.add_argument('--beta_fs', type=float, default=1.0, help='Beta-Bernoulli beta')
-    parser.add_argument('--use_gating_mlp', type=bool, default=False, help='use_gating_mlp')
+    parser.add_argument('--use_gating_mlp', type=int, default=0, help='use_gating_mlp')
     parser.add_argument('--gating_mlp_hidden', type=int, default=32, help='Gating mlp hidden dim')
 
     parser.add_argument('--max_grad_norm', type=float, default=5.0, help='max_grad_norm')
 
-
-    
     parser.add_argument('--initial_temp', type=float, default=1.0, help='initial_temp')
     parser.add_argument('--final_temp', type=float, default=2.0, help='final_temp')
     parser.add_argument('--anneal_epochs', type=int, default=30, help='anneal_epochs')
