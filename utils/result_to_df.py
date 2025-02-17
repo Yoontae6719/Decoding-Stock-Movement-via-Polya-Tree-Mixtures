@@ -108,7 +108,6 @@ def global_importance_to_dataframes(global_importance_dict, feature_names=None):
         if imp_arr is not None:
             # 길이 D = feature 개수
             if feature_names is not None and len(feature_names) == len(imp_arr):
-                # feature_names가 있으면, 열에 feature_name 사용
                 for f_name, val in zip(feature_names, imp_arr):
                     importance_rows.append({
                         'type': imp_type,

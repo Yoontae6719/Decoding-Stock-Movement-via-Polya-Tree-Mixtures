@@ -88,6 +88,8 @@ class Dataset_SNP(Dataset):
             self.data_y = df_y[border1:border2]
         else:
             raise ValueError('You should choose stop_loss as 0, 2, 3, or 4.')
+            
+        self.stock_Close = self.data_Close[border1:border2]
 
     def __getitem__(self, index):
         stock_x = self.data_x[index]

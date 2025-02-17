@@ -38,6 +38,11 @@ class Dataset_SNP_XAI(Dataset):
     def __read_data__(self):
         df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
         df_raw['Date'] = pd.to_datetime(df_raw['Date'])
+        
+        df_Close = df_raw['Close']
+        self.data_Close = df_Close.values
+        df_raw = df_raw.drop(["Close"], axis = 1)
+        
         df_raw = df_raw.dropna()
 
         df_raw[['Y','Y_2','Y_3','Y_4','Y_5']] = df_raw[['Y','Y_2','Y_3','Y_4','Y_5']].apply(
@@ -98,11 +103,14 @@ class Dataset_SNP_XAI(Dataset):
 
         self.data_x = data_x_sub[border1:border2]
         self.data_y = df_sub_y[border1:border2]
+        self.stock_Close = self.data_Close[border1:border2]
 
+    
     def __getitem__(self, idx):
         x = self.data_x[idx]
         y = self.data_y[idx]
-        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.long)
+        stock_Close = self.data_Close[index]
+        return torch.tensor(stock_x, dtype=torch.float32), torch.tensor(stock_y, dtype=torch.long), torch.tensor(stock_Close, dtype=torch.float32)
 
     def __len__(self):
         return len(self.data_x)
