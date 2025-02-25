@@ -28,9 +28,6 @@ class Model(nn.Module):
         probs = self.root(x, temperature)
         return probs
     
-    def regularization_loss(self):
-        return self.root.regularization_loss()
-    
     def forward_hard(self, x):
         # for xai (test period): hard gating + hard mask
         return self.root.forward_hard(x)

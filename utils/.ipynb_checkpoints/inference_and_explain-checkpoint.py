@@ -11,110 +11,205 @@ import torch.nn.functional as F
 
 
 class Dataset_SNP_XAI(Dataset):
-
-    def __init__(
-        self,
-        args,
-        root_path,
-        data_path='SNP.csv',
-        flag='test',
-        scale=True,
-        stop_loss=0,
-        stock_name='AAPL'
-    ):
-        super().__init__()
-        assert flag in ['train','val','test']
+    def __init__(self, args, root_path, flag='train', data_path='SNP.csv', scale=True, stop_loss = 0):
+        
         self.args = args
+
+        assert flag in ['train', 'test', 'val']
+        type_map = {'train': 0, 'val': 1, 'test': 2}
+        self.set_type = type_map[flag]
+
+        self.scale = scale
         self.root_path = root_path
         self.data_path = data_path
-        self.scale = scale
         self.stop_loss = stop_loss
-        self.stock_name = stock_name
-
-        type_map = {'train':0, 'val':1, 'test':2}
-        self.set_type = type_map[flag]
         self.__read_data__()
 
     def __read_data__(self):
-        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
+        # Step 1. Get dataset
+        df_raw = pd.read_feather(os.path.join(self.root_path, self.data_path))
         df_raw['Date'] = pd.to_datetime(df_raw['Date'])
-        
+
         df_Close = df_raw['Close']
         self.data_Close = df_Close.values
         df_raw = df_raw.drop(["Close"], axis = 1)
+
         
+        df_raw = df_raw.drop(["Stock"], axis=1)
         df_raw = df_raw.dropna()
 
-        df_raw[['Y','Y_2','Y_3','Y_4','Y_5']] = df_raw[['Y','Y_2','Y_3','Y_4','Y_5']].apply(
-            lambda col: col.map({'SELL':0, 'BUY':1})
-        )
+        df_raw[['Y', 'Y_2', 'Y_3', 'Y_4',"Y_5"]] = df_raw[['Y', 'Y_2', 'Y_3', 'Y_4',"Y_5"]].apply(lambda x: x.map({'SELL': 0, 'BUY': 1}))
+        
+        # Step 2. Train // valid // test
+        num_train = df_raw[(df_raw['Date'] >= '2020-01-01') & (df_raw['Date'] <= '2022-12-31')].shape[0]
+        num_vali =  df_raw[(df_raw['Date'] >= '2023-01-01') & (df_raw['Date'] <= '2023-12-31')].shape[0]
+        num_test =  df_raw[(df_raw['Date'] >= '2024-01-01')].shape[0] 
+        
+        border1s = [0,
+                    num_train,
+                    len(df_raw) - num_test]
+        
+        border2s = [num_train,
+                    num_train + num_vali,
+                    len(df_raw)]
+        
+        border1 = border1s[self.set_type]
+        border2 = border2s[self.set_type]
 
-        col_drop = ['Stock','Date','Y','Y_2','Y_3','Y_4','Y_5']
-        df_x_all = df_raw.drop(columns=col_drop)
-        self.feature_names = df_x_all.columns.tolist()
-
-        mask_train = (df_raw['Date']>='2020-01-01') & (df_raw['Date']<='2022-12-31')
-        train_x = df_x_all[mask_train].values
-
+        # Step 3. Scaling
+        df_x = df_raw.drop(['Y', 'Y_2', 'Y_3', 'Y_4',"Y_5"], axis=1).drop(["Date"], axis=1)
+        self.feature_names = df_x.columns.tolist()
+        
         if self.scale:
-            quantile_train = train_x.astype(np.float64)
+            train_data = df_x[border1s[0]:border2s[0]]
+            quantile_train = np.copy(train_data.values).astype(np.float64)
             stds = np.std(quantile_train, axis=0, keepdims=True)
             noise_std = 1e-3 / np.maximum(stds, 1e-3)
             quantile_train += noise_std * np.random.randn(*quantile_train.shape)
-
-            self.scaler = QuantileTransformer(output_distribution='normal', random_state=42)
-            self.scaler.fit(quantile_train)
-            data_x_all = self.scaler.transform(df_x_all.values)
+            self.scaler = QuantileTransformer(output_distribution='normal', random_state=1004)
+            self.scaler.fit(quantile_train)  
+            data_all = self.scaler.transform(df_x.values)  
         else:
-            self.scaler = None
-            data_x_all = df_x_all.values
+            data_all = df_x.values
 
-        # 특정 종목만
-        df_sub = df_raw[df_raw['Stock']==self.stock_name].copy()
-        sub_idx = df_sub.index
-        data_x_sub = data_x_all[sub_idx]
 
-        mask_train_sub = (df_sub['Date']>='2020-01-01') & (df_sub['Date']<='2022-12-31')
-        mask_val_sub   = (df_sub['Date']>='2023-01-01') & (df_sub['Date']<='2023-12-31')
-        mask_test_sub  = (df_sub['Date']>='2024-01-01')
-
-        num_train = mask_train_sub.sum()
-        num_val   = mask_val_sub.sum()
-        num_test  = mask_test_sub.sum()
-
-        border1s = [0, num_train, num_train+num_val]
-        border2s = [num_train, num_train+num_val, num_train+num_val+num_test]
-
-        if self.stop_loss==0:
-            df_sub_y = df_sub['Y'].values
-        elif self.stop_loss==2:
-            df_sub_y = df_sub['Y_2'].values
-        elif self.stop_loss==3:
-            df_sub_y = df_sub['Y_3'].values
-        elif self.stop_loss==4:
-            df_sub_y = df_sub['Y_4'].values
-        elif self.stop_loss==5:
-            df_sub_y = df_sub['Y_5'].values
+        self.data_x = data_all[border1:border2]  
+        if self.stop_loss == 0:
+            df_y = df_raw[['Y']].values
+            self.data_y = df_y[border1:border2]
+        elif self.stop_loss == 2:
+            df_y = df_raw[['Y_2']].values
+            self.data_y = df_y[border1:border2]
+        elif self.stop_loss == 3:
+            df_y = df_raw[['Y_3']].values
+            self.data_y = df_y[border1:border2]
+        elif self.stop_loss == 4:
+            df_y = df_raw[['Y_4']].values
+            self.data_y = df_y[border1:border2]
+        elif self.stop_loss == 5:
+            df_y = df_raw[['Y_5']].values
+            self.data_y = df_y[border1:border2]
         else:
-            raise ValueError("stop_loss must be in [0,2,3,4,5].")
-
-        set_type = self.set_type
-        border1, border2 = border1s[set_type], border2s[set_type]
-
-        self.data_x = data_x_sub[border1:border2]
-        self.data_y = df_sub_y[border1:border2]
+            raise ValueError('You should choose stop_loss as 0, 2, 3, or 4.')
+            
         self.stock_Close = self.data_Close[border1:border2]
 
-    
-    def __getitem__(self, idx):
-        x = self.data_x[idx]
-        y = self.data_y[idx]
+    def __getitem__(self, index):
+        stock_x = self.data_x[index]
+        stock_y = self.data_y[index]
         stock_Close = self.data_Close[index]
         return torch.tensor(stock_x, dtype=torch.float32), torch.tensor(stock_y, dtype=torch.long), torch.tensor(stock_Close, dtype=torch.float32)
+
 
     def __len__(self):
         return len(self.data_x)
 
+
+#class Dataset_SNP_XAI(Dataset):
+#
+#    def __init__(
+#        self,
+#        args,
+#        root_path,
+#        data_path='SNP.csv',
+#        flag='test',
+#        scale=True,
+#        stop_loss=0,
+#        stock_name='AAPL'
+#    ):
+#        super().__init__()
+#        assert flag in ['train','val','test']
+#        self.args = args
+#        self.root_path = root_path
+#        self.data_path = data_path
+#        self.scale = scale
+#        self.stop_loss = stop_loss
+#        self.stock_name = stock_name
+#
+#        type_map = {'train':0, 'val':1, 'test':2}
+#        self.set_type = type_map[flag]
+#        self.__read_data__()
+#
+#    def __read_data__(self):
+#        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
+#        df_raw['Date'] = pd.to_datetime(df_raw['Date'])
+#        
+#        df_Close = df_raw['Close']
+#        self.data_Close = df_Close.values
+#        df_raw = df_raw.drop(["Close"], axis = 1)
+#        
+#        df_raw = df_raw.dropna()
+#
+#        df_raw[['Y','Y_2','Y_3','Y_4','Y_5']] = df_raw[['Y','Y_2','Y_3','Y_4','Y_5']].apply(
+#            lambda col: col.map({'SELL':0, 'BUY':1})
+#        )
+#
+#        col_drop = ['Stock','Date','Y','Y_2','Y_3','Y_4','Y_5']
+#        df_x_all = df_raw.drop(columns=col_drop)
+#        self.feature_names = df_x_all.columns.tolist()
+#
+#        mask_train = (df_raw['Date']>='2020-01-01') & (df_raw['Date']<='2022-12-31')
+#        train_x = df_x_all[mask_train].values
+#
+#        if self.scale:
+#            quantile_train = train_x.astype(np.float64)
+#            stds = np.std(quantile_train, axis=0, keepdims=True)
+#            noise_std = 1e-3 / np.maximum(stds, 1e-3)
+#            quantile_train += noise_std * np.random.randn(*quantile_train.shape)
+#
+#            self.scaler = QuantileTransformer(output_distribution='normal', random_state=42)
+#            self.scaler.fit(quantile_train)
+#            data_x_all = self.scaler.transform(df_x_all.values)
+#        else:
+#            self.scaler = None
+#            data_x_all = df_x_all.values
+#
+#        # 특정 종목만
+#        df_sub = df_raw[df_raw['Stock']==self.stock_name].copy()
+#        sub_idx = df_sub.index
+#        data_x_sub = data_x_all[sub_idx]
+#
+#        mask_train_sub = (df_sub['Date']>='2020-01-01') & (df_sub['Date']<='2022-12-31')
+#        mask_val_sub   = (df_sub['Date']>='2023-01-01') & (df_sub['Date']<='2023-12-31')
+#        mask_test_sub  = (df_sub['Date']>='2024-01-01')
+#
+#        num_train = mask_train_sub.sum()
+#        num_val   = mask_val_sub.sum()
+#        num_test  = mask_test_sub.sum()
+#
+#        border1s = [0, num_train, num_train+num_val]
+#        border2s = [num_train, num_train+num_val, num_train+num_val+num_test]
+#
+#        if self.stop_loss==0:
+#            df_sub_y = df_sub['Y'].values
+#        elif self.stop_loss==2:
+#            df_sub_y = df_sub['Y_2'].values
+#        elif self.stop_loss==3:
+#            df_sub_y = df_sub['Y_3'].values
+#        elif self.stop_loss==4:
+#            df_sub_y = df_sub['Y_4'].values
+#        elif self.stop_loss==5:
+#            df_sub_y = df_sub['Y_5'].values
+#        else:
+#            raise ValueError("stop_loss must be in [0,2,3,4,5].")
+#
+#        set_type = self.set_type
+#        border1, border2 = border1s[set_type], border2s[set_type]
+#
+#        self.data_x = data_x_sub[border1:border2]
+#        self.data_y = df_sub_y[border1:border2]
+#        self.stock_Close = self.data_Close[border1:border2]
+#
+#    
+#    def __getitem__(self, idx):
+#        x = self.data_x[idx]
+#        y = self.data_y[idx]
+#        stock_Close = self.data_Close[idx]
+#        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.long), torch.tensor(stock_Close, dtype=torch.float32)
+#
+#    def __len__(self):
+#        return len(self.data_x)
+#
 
 ###############################################################################
 # AAA Node/leaf routing stat (Hard/Soft)
@@ -922,11 +1017,12 @@ def inference_and_explain(
 
     # 1)  Accuracy, MCC
     preds_list, labels_list = [], []
-    all_x, all_y = [], []
+    all_x, all_y, all_close = [], [], []
     with torch.no_grad():
-        for x_batch, y_batch in test_loader:
+        for x_batch, y_batch, close in test_loader:
             x_batch = x_batch.to(device)
             y_batch = y_batch.to(device).squeeze(-1)
+            close = close.to(device).squeeze(-1)
 
             if gating_mode=='hard':
                 probs = model.forward_hard(x_batch)
@@ -936,9 +1032,11 @@ def inference_and_explain(
             preds = torch.argmax(probs, dim=1)
             preds_list.append(preds.cpu().numpy())
             labels_list.append(y_batch.cpu().numpy())
+            
 
             all_x.append(x_batch)
             all_y.append(y_batch)
+            all_close.append(close)
 
     preds_array = np.concatenate(preds_list, axis=0)
     labels_array= np.concatenate(labels_list, axis=0)
@@ -1094,5 +1192,253 @@ def inference_and_explain(
         node_level_stats,         # list of dict (hard or soft)
         leaf_features_data,       # list of dict (phi log-odds)
         global_importance_data,   # dict { "phi_only":{...}, "gamma_weight":{...} }
-        leaf_influence            # dict { "gamma_weight":[...], "none":None }
+        leaf_influence,            # dict { "gamma_weight":[...], "none":None }
+        all_close
     )
+
+
+
+###############################################################################
+# TRADING STRATEGY 
+###############################################################################
+
+
+
+def build_node_path_map(node, path="root", path_map=None):
+    if path_map is None:
+        path_map = {}
+    path_map[id(node)] = path
+    if not node.is_leaf:
+        build_node_path_map(node.left_child, path+"_L", path_map)
+        build_node_path_map(node.right_child, path+"_R", path_map)
+    return path_map
+
+
+def trace_leaf_path_hard(node, x):
+    """
+    단일 샘플 x에 대해 Hard Gating으로 어느 leaf까지 갔는지 path 문자열로 반환.
+    node: SoftPolyaTreeNode
+    x: shape (1, D)
+    """
+    if node.is_leaf:
+        return node_path_map[id(node)]
+    else:
+        if node.gating is not None:
+            gate_logit = node.gating(x).squeeze(-1)
+        else:
+            gate_logit = x @ node.w + node.b
+        p_left = torch.sigmoid(gate_logit)
+        if p_left > 0.5:
+            # 왼쪽으로
+            return trace_leaf_path_hard(node.left_child, x)
+        else:
+            # 오른쪽으로
+            return trace_leaf_path_hard(node.right_child, x)
+
+
+
+
+
+def leaf_level_signal_inference(
+    model,
+    test_loader,
+    feature_names,
+    device="cpu",
+    min_coverage=0.05,
+    min_leaf_accuracy=0.55
+):
+    """
+    Polya-Tree Mixtures 모델에서 HARD GATING으로 각 샘플을 리프에 할당한 뒤,
+    리프별 '정밀 시그널'을 산출하여 DataFrame 형태로 반환합니다.
+    
+    Args:
+        model (nn.Module): 학습된 Polya-Tree Mixtures 모델
+        test_loader (DataLoader): (x, y, close) 형태의 테스트 데이터 로더
+        feature_names (list): 입력 피처 이름 리스트
+        device (str): 'cpu' or 'cuda'
+        min_coverage (float): 리프를 유효하다고 판단할 최소 커버리지(비율)
+        min_leaf_accuracy (float): 리프를 '신뢰도 있는 리프'로 인정할 최소 정확도
+        
+    Returns:
+        result_df (pd.DataFrame): 각 샘플별로 다음 정보가 포함된 결과표
+          - sample_index: 샘플 인덱스(테스트 세트 내 위치)
+          - leaf_path: 할당된 리프의 path 예: 'root_L_L_R' 등
+          - predicted_label: 그 리프에서의 최종 예측(0=SELL, 1=BUY)
+          - leaf_accuracy: 그 리프의 accuracy(하드 라우팅 통계 기반)
+          - leaf_mcc: 그 리프의 MCC
+          - coverage: 해당 리프가 전체 샘플 중 얼마나 커버하는지 (하드 라우팅)
+          - leaf_signal_strength: 예시로 정의한 시그널 강도 ( coverage와 leaf 정확도 기반 )
+          - top3_features: 그 리프의 phi log-odds 기준 Top 3 지표 이름 (문자열)
+          - stock_close: 실제 종가(금융 시계열 분석 시 활용)
+    """
+    model.eval()
+    
+    # ------------------------------------------------
+    # 1) Node-level (Hard) 통계를 구해서
+    #    각 리프의 accuracy, coverage, MCC, path 등을 파악합니다.
+    # ------------------------------------------------
+    all_x, all_y, all_close = [], [], []
+    for x_batch, y_batch, close_batch in test_loader:
+        all_x.append(x_batch)
+        all_y.append(y_batch)
+        all_close.append(close_batch)
+    X_cat = torch.cat(all_x, dim=0).to(device)
+    Y_cat = torch.cat(all_y, dim=0).to(device)
+    Close_cat = torch.cat(all_close, dim=0).cpu().numpy()  # 종가는 주로 CPU 상의 배열로 처리
+
+    # 아래 gather_routing_statistics_hard는 이미 inference_and_explain 내부 등에서 사용한 예시를 참고.
+    # 여기서는 “각 노드/리프별로 하드 라우팅 통계”를 구해주는 함수를 직접 가져온다고 가정합니다.
+    routing_stats = gather_routing_statistics_hard(model.root, X_cat, Y_cat, device, path="root")
+    
+    # 리프 통계만 추출하여 dict 형태로 정리
+    leaf_stats_dict = {}
+    for rs in routing_stats:
+        if rs['is_leaf']:
+            leaf_path = rs['node_path']
+            leaf_stats_dict[leaf_path] = {
+                'n_samples': rs['n_samples'],
+                'n_label0': rs['n_label0'],
+                'n_label1': rs['n_label1'],
+                'acc_leaf': rs['acc_leaf'] if rs['acc_leaf'] is not None else 0.0,
+                'mcc_leaf': rs['mcc_leaf'] if rs['mcc_leaf'] is not None else 0.0
+            }
+    total_samples = len(X_cat)
+
+    # coverage 계산
+    for lp in leaf_stats_dict:
+        n_samp_leaf = leaf_stats_dict[lp]['n_samples']
+        leaf_stats_dict[lp]['coverage'] = n_samp_leaf / total_samples
+    
+    # ------------------------------------------------
+    # 2) 리프별 "Top/Bottom K" feature(= phi log-odds) 정보를 읽어옵니다.
+    #    -> 여기서는 top3만 간단히 뽑아서 시그널 해석에 활용 예시
+    # ------------------------------------------------
+    leaf_features_list = gather_leaf_feature_scores(model.root, path="root")
+    # leaf_features_list = [ ( 'root_L', ndarray_of_logodds ),  ... ]
+
+    # leaf별로 phi log-odds 정렬하여 top3 feature 이름 저장
+    leaf_top3_features = {}
+    for (lp, score_arr) in leaf_features_list:
+        idx_sorted = np.argsort(score_arr)
+        # 상위 3개:
+        idx_top3 = idx_sorted[-3:]
+        top3_names = [feature_names[i] for i in idx_top3]
+        leaf_top3_features[lp] = top3_names
+
+    # ------------------------------------------------
+    # 3) 각 테스트 샘플을 하드 라우팅으로 통과시켜서,
+    #    "이 샘플은 어느 리프에 도달?" + "해당 리프의 예측 라벨" 등을 구합니다.
+    # ------------------------------------------------
+    model.eval()
+    with torch.no_grad():
+        # hard 라우팅 통과
+        preds_list = []
+        leaf_path_list = []
+        for i in range(X_cat.size(0)):
+            xi = X_cat[i:i+1]  # (1,D)
+            yi_pred = model.forward_hard(xi)  # (1, num_classes)
+            pred_label = int(torch.argmax(yi_pred, dim=1).item())
+            
+            # 어떤 leaf path로 갔는지 추적
+            path = trace_leaf_path_hard(model.root, xi)
+            preds_list.append(pred_label)
+            leaf_path_list.append(path)
+    
+    preds_array = np.array(preds_list)
+    
+    # ------------------------------------------------
+    # 4) 샘플별 "Leaf 기준 시그널" 결정
+    #    여기서는 leaf coverage, leaf accuracy 등을 보고,
+    #    (예시) coverage>min_coverage 이고 accuracy>min_leaf_accuracy 이면
+    #          리프를 '신뢰도 있는 리프'로 본 뒤, 해당 리프에서 예측이 1 => BUY 시그널 부여
+    # ------------------------------------------------
+    result_rows = []
+    for i in range(len(X_cat)):
+        path_i = leaf_path_list[i]
+        pred_label_i = preds_array[i]
+        stock_close_i = Close_cat[i]
+
+        leaf_info = leaf_stats_dict.get(path_i, {})
+        coverage_i = leaf_info.get('coverage', 0.0)
+        acc_i = leaf_info.get('acc_leaf', 0.0)
+        mcc_i = leaf_info.get('mcc_leaf', 0.0)
+
+        # 시그널 강도(예시): coverage, accuracy를 둘 다 감안한 가중치
+        # (실제로는 더 복잡하게 구성 가능)
+        signal_strength = coverage_i * acc_i
+
+        # 조건부 매수/매도 시그널: 단순 예시
+        # - 리프 정확도/커버리지가 일정 기준 이상 + pred_label=1(매수) 인 경우
+        #   => "BUY" 신호
+        # - 나머지는 "HOLD" (또는 SELL)
+        if (coverage_i >= min_coverage) and (acc_i >= min_leaf_accuracy) and (pred_label_i == 1):
+            final_signal = "BUY"
+        else:
+            final_signal = "HOLD"
+
+        # top3 features
+        top3_feats = leaf_top3_features.get(path_i, [])
+
+        row_dict = {
+            "sample_index": i,
+            "leaf_path": path_i,
+            "predicted_label": pred_label_i,
+            "leaf_accuracy": acc_i,
+            "leaf_mcc": mcc_i,
+            "coverage": coverage_i,
+            "leaf_signal_strength": signal_strength,
+            "top3_features": ", ".join(top3_feats),
+            "stock_close": stock_close_i,
+            "signal": final_signal
+        }
+        result_rows.append(row_dict)
+    
+    result_df = pd.DataFrame(result_rows)
+    return result_df
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

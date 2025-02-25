@@ -47,12 +47,6 @@ class SoftBetaBernoulliFeatureSelector(nn.Module):
             gamma = (phi > 0.5).float()
         return gamma, phi
 
-    def regularization_loss(self):
-        phi = torch.sigmoid(self.logit_phi)
-        prior_nll = - ((self.alpha - 1) * torch.log(phi + 1e-8) +
-                       (self.beta - 1) * torch.log(1 - phi + 1e-8)).mean() # sum()
-        return prior_nll
-
 
 class SoftPolyaTreeNode(nn.Module):
     """
@@ -151,16 +145,3 @@ class SoftPolyaTreeNode(nn.Module):
             out = mask_left*probs_left + mask_right*probs_right
             return out
             
-    def regularization_loss(self):
-        reg_loss = 0.0
-        weight_decay = 1e-4
-
-        if self.is_leaf:
-            for param in self.local_expert.parameters():
-                reg_loss += weight_decay * (param**2).sum()
-            reg_loss += self.feature_selector.regularization_loss() * 0.01
-        else:
-            reg_loss += self.left_child.regularization_loss()
-            reg_loss += self.right_child.regularization_loss()
-
-        return reg_loss

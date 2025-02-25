@@ -6,6 +6,9 @@ import random
 import numpy as np
 import optuna  
 from exp.exp_main import Exp_Main
+import multiprocessing
+import csv
+
 
 if __name__ == '__main__':
     fix_seed = 2025
@@ -32,7 +35,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=10, help='data loader num workers')
     parser.add_argument('--itr', type=int, default=1, help='experiments times')
     parser.add_argument('--train_epochs', type=int, default=100, help='train epochs')
-    parser.add_argument('--batch_size', type=int, default=512, help='batch size of train input data')
+    parser.add_argument('--batch_size', type=int, default=16, help='batch size of train input data')
     parser.add_argument('--patience', type=int, default=10, help='early stopping patience')
     parser.add_argument('--learning_rate', type=float, default=0.0002, help='optimizer learning rate')
     parser.add_argument('--des', type=str, default='test', help='exp description')
@@ -58,8 +61,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--max_grad_norm', type=float, default=5.0, help='max_grad_norm')
 
-    parser.add_argument('--initial_temp', type=float, default=1.0, help='initial_temp')
-    parser.add_argument('--final_temp', type=float, default=2.0, help='final_temp')
+    parser.add_argument('--initial_temp', type=float, default=2.0, help='initial_temp')
+    parser.add_argument('--final_temp', type=float, default=0.2, help='final_temp')
     parser.add_argument('--anneal_epochs', type=int, default=30, help='anneal_epochs')
     parser.add_argument('--schedule_type', type=str, default="linear", help='schedule_type')
 
@@ -112,6 +115,8 @@ if __name__ == '__main__':
     # (B) Optuna (is_training = 2)
     elif args.is_training == 2:
         Exp = Exp_Main(args)  
+        #multiprocessing.set_start_method('spawn', force=True)
+
 
         if args.optuna_metric == "mcc":
             study = optuna.create_study(direction="maximize")
@@ -125,6 +130,9 @@ if __name__ == '__main__':
         study.optimize(optuna_objective, n_trials=args.n_trial)
 
         print("===== Tuning Complete =====")
+        best_trial = study.best_trial  
+        
+
         print(f"Best Trial ID: {study.best_trial.number}")
         print(f"Best Value  : {study.best_trial.value}")
         print("Best Params : ")
@@ -132,12 +140,12 @@ if __name__ == '__main__':
             print(f"    {key}: {val}")
 
         # Save
-        folder_path = './results/' + args.des + '/' + args.data + '/'
+        folder_path = './results/' + args.data + '/'
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
 
-        csv_file = folder_path  + "best_params.csv" 
+        csv_file = folder_path  + f"best_params_{args.des}.csv" 
         with open(csv_file, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(["best_trial_id", "best_value", "param_name", "param_value"])

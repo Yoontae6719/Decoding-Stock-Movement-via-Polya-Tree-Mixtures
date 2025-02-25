@@ -31,34 +31,30 @@ class TemperatureScheduler:
             # 기본은 linear
             return self.initial_temp + (self.final_temp - self.initial_temp) * progress
 
-
 def adjust_learning_rate(optimizer, epoch, args):
-    # lr = args.learning_rate * (0.2 ** (epoch // 2))
+    
+    # Default to an empty dictionary
+    lr_adjust = {}
+    
     if args.lradj == 'type1':
         lr_adjust = {epoch: args.learning_rate * (0.5 ** ((epoch - 1) // 1))}
-    
     elif args.lradj == 'type2':
         lr_adjust = {
             2: 5e-5, 4: 1e-5, 6: 5e-6, 8: 1e-6,
             10: 5e-7, 15: 1e-7, 20: 5e-8
         }
-
     elif args.lradj == 'type3':
         lr_adjust = {
             6: 5e-5, 9: 1e-5, 12: 5e-6, 15: 1e-6,
             20: 5e-7, 25: 1e-7, 30: 5e-8
         }
-        
     elif args.lradj == 'cosine':
-        T_max = args.train_epochs 
-        #lr = 0.5 * args.learning_rate * (1 + math.cos(math.pi * (epoch - 1) / (T_max - 1)))
+        T_max = args.train_epochs
         lr = 1e-5 + (args.learning_rate - 1e-5) * (1 + math.cos(math.pi * epoch / T_max)) / 2
-        
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
         print(f'[Cosine] Updating learning rate to {lr}')
-        return 
-
+        return
     elif args.lradj == '3':
         lr_adjust = {epoch: args.learning_rate if epoch < 10 else args.learning_rate*0.1}
     elif args.lradj == '4':
@@ -66,7 +62,11 @@ def adjust_learning_rate(optimizer, epoch, args):
     elif args.lradj == '5':
         lr_adjust = {epoch: args.learning_rate if epoch < 25 else args.learning_rate*0.1}
     elif args.lradj == '6':
-        lr_adjust = {epoch: args.learning_rate if epoch < 5 else args.learning_rate*0.1}  
+        lr_adjust = {epoch: args.learning_rate if epoch < 5 else args.learning_rate*0.1}
+    else:
+        pass
+    
+    # Update learning rate if the epoch is in the dictionary
     if epoch in lr_adjust.keys():
         lr = lr_adjust[epoch]
         for param_group in optimizer.param_groups:
