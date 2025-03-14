@@ -4,4 +4,3 @@ optuna==4.2.0
 pandas==1.5.3
 ptflops==0.7.4
 scikit_learn==1.2.2
-torch==2.1.0+cu118

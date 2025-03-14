@@ -11,15 +11,15 @@ python -u run.py \
   --model $model_name \
   --data TSLA \
   --dim_input 437 \
-  --alpha_fs 0.4793517441865507 \
-  --beta_fs 0.10397776764986093 \
-  --max_depth 5 \
+  --alpha_fs 0.3302208363198128 \
+  --beta_fs 0.1907433014660887 \
+  --max_depth 1 \
   --use_gating_mlp 1 \
   --gating_mlp_hidden 32 \
   --hidden_dim_expert 32 \
   --anneal_epochs 30 \
   --schedule_type linear \
-  --learning_rate 0.0001 \
+  --learning_rate 0.0003 \
   --lradj type2 \
   --des 'EXPNEW' \
   --itr 1
