@@ -1,3 +1,4 @@
+# run.py
 import argparse
 import os
 import torch
@@ -6,9 +7,11 @@ import random
 import numpy as np
 import optuna  
 from exp.exp_main import Exp_Main
+from exp.exp_trading import Exp_Trading
+
 import multiprocessing
 import csv
-
+import sys
 
 if __name__ == '__main__':
     fix_seed = 2025
@@ -36,8 +39,8 @@ if __name__ == '__main__':
     parser.add_argument('--itr', type=int, default=1, help='experiments times')
     parser.add_argument('--train_epochs', type=int, default=100, help='train epochs')
     parser.add_argument('--batch_size', type=int, default=16, help='batch size of train input data')
-    parser.add_argument('--patience', type=int, default=10, help='early stopping patience')
-    parser.add_argument('--learning_rate', type=float, default=0.0002, help='optimizer learning rate')
+    parser.add_argument('--patience', type=int, default=5, help='early stopping patience')
+    parser.add_argument('--learning_rate', type=float, default=0.0003, help='optimizer learning rate')
     parser.add_argument('--des', type=str, default='test', help='exp description')
     parser.add_argument('--lradj', type=str, default='cosine', help='adjust learning rate')
     parser.add_argument('--temperature_scheduler', type=bool, default=True, help='temperature scheduler')
@@ -58,17 +61,19 @@ if __name__ == '__main__':
     parser.add_argument('--beta_fs', type=float, default=1.0, help='Beta-Bernoulli beta')
     parser.add_argument('--use_gating_mlp', type=int, default=0, help='use_gating_mlp')
     parser.add_argument('--gating_mlp_hidden', type=int, default=32, help='Gating mlp hidden dim')
-
     parser.add_argument('--max_grad_norm', type=float, default=5.0, help='max_grad_norm')
 
-    parser.add_argument('--initial_temp', type=float, default=2.0, help='initial_temp')
-    parser.add_argument('--final_temp', type=float, default=0.2, help='final_temp')
-    parser.add_argument('--anneal_epochs', type=int, default=30, help='anneal_epochs')
+    parser.add_argument('--initial_temp', type=float, default=1.0, help='initial_temp')
+    parser.add_argument('--final_temp', type=float, default=0.1, help='final_temp')
+    parser.add_argument('--anneal_epochs', type=int, default=5, help='anneal_epochs')
     parser.add_argument('--schedule_type', type=str, default="linear", help='schedule_type')
 
+    parser.add_argument('--use_feature_selection', action='store_true', help='use multiple gpus', default=True)
+    parser.add_argument('--use_leaf_feature_selector_only', type=int, help='use multiple gpus', default=1)
+    parser.add_argument('--lambda_KL', type=float, default=0.01, help='lambda_KL')
+
     # Optuna settings
-    parser.add_argument('--n_trial', type=int, default=20, help='number of tuning trials') 
-    parser.add_argument('--optuna_metric', type=str, default="loss", help='optuna_metric: "mcc" or "loss"')
+    parser.add_argument('--top_k', type=int, default=20, help='number of tuning trials') 
 
     args = parser.parse_args()
 
@@ -95,14 +100,16 @@ if __name__ == '__main__':
     if args.is_training == 1:
         Exp = Exp_Main
         for ii in range(args.itr):
-            setting = '{}_{}_md{}_hde{}_al{}_be{}_mlp{}_{}'.format(
+            setting = '{}_{}_md{}_hde{}_alp{}_use{}_mlp{}_gde_{}_lr_{}_des{}'.format(
                 args.model,
                 args.data,
                 args.max_depth,
                 args.hidden_dim_expert,
                 int(args.alpha_fs * 10),
-                int(args.beta_fs*10),
+                args.use_leaf_feature_selector_only,
                 args.use_gating_mlp,
+                args.gating_mlp_hidden,
+                args.lradj,
                 args.des
             ) + f"_{ii}"
 
@@ -111,58 +118,43 @@ if __name__ == '__main__':
             exp.fit(setting)
 
             torch.cuda.empty_cache()
-            
-    # (B) Optuna (is_training = 2)
-    elif args.is_training == 2:
-        Exp = Exp_Main(args)  
-        #multiprocessing.set_start_method('spawn', force=True)
 
-
-        if args.optuna_metric == "mcc":
-            study = optuna.create_study(direction="maximize")
-        else:
-            study = optuna.create_study(direction="minimize")
-
-        def optuna_objective(trial):
-            return Exp.objective(trial)
-
-        print("===== Start Optuna Tuning =====")
-        study.optimize(optuna_objective, n_trials=args.n_trial)
-
-        print("===== Tuning Complete =====")
-        best_trial = study.best_trial  
         
-
-        print(f"Best Trial ID: {study.best_trial.number}")
-        print(f"Best Value  : {study.best_trial.value}")
-        print("Best Params : ")
-        for key, val in study.best_trial.params.items():
-            print(f"    {key}: {val}")
-
-        # Save
-        folder_path = './results/' + args.data + '/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
-
-
-        csv_file = folder_path  + f"best_params_{args.des}.csv" 
-        with open(csv_file, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(["best_trial_id", "best_value", "param_name", "param_value"])
-
-            for key, val in best_trial.params.items():
-                writer.writerow([
-                    best_trial.number,
-                    best_trial.value,
-                    key,
-                    val
-                ])
-                
-        print(f"\n[INFO] Best trial parameters are saved to {csv_file}.")
-        if args.gpu_type == 'mps':
-            torch.backends.mps.empty_cache()
-        elif args.gpu_type == 'cuda':
-            torch.cuda.empty_cache()
-            
     else:
-        print(f"is_training={args.is_training} is not supported. Use 1 or 2.")
+        Exp = Exp_Main        
+        setting = '{}_{}_md{}_hde{}_alp{}_use{}_mlp{}_gde_{}_lr_{}_des{}_0'.format(
+            args.model,
+            args.data,
+            args.max_depth,
+            args.hidden_dim_expert,
+            int(args.alpha_fs * 10),
+            args.use_leaf_feature_selector_only,
+            args.use_gating_mlp,
+            args.gating_mlp_hidden,
+            args.lradj,
+            args.des
+        )
+        
+        exp = Exp(args)  # Create experiment
+        
+        checkpoint_path = os.path.join(args.checkpoints, setting, 'checkpoint.pth')
+        print("Loading model from", checkpoint_path)
+        
+        if os.path.exists(checkpoint_path):
+            exp.model.load_state_dict(torch.load(checkpoint_path, map_location=args.device))
+            print("Checkpoint loaded successfully")
+        else:
+            print(f"Checkpoint not found at {checkpoint_path}")
+            print("Searching for similar checkpoints...")
+            for root, dirs, files in os.walk(args.checkpoints):
+                for dir in dirs:
+                    if args.data in dir and args.model in dir:
+                        check_file = os.path.join(args.checkpoints, dir, 'checkpoint.pth')
+                        if os.path.exists(check_file):
+                            print(f"  Found: {dir}")
+            sys.exit(1)
+        
+        # Run only XAI analysis
+        print(f"Running standalone XAI analysis for {args.data}")
+        results = exp.xai(setting=setting)
+        print("XAI analysis completed successfully!")
